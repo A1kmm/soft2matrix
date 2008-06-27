@@ -113,7 +113,7 @@ private:
   {
     if (aLine == "!sample_table_end")
     {
-      processLine = &SOFT2Matrix::processSampleHeader;
+      processLine = &SOFT2Matrix::processSampleIntro;
       return;
     }
   }
