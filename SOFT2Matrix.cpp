@@ -56,12 +56,21 @@ private:
     typedef boost::tokenizer<boost::char_separator<char> > tok_t;
     tok_t tok(aLine, tdv);
 
-    for (tok_t::iterator i = tok.begin(); i != tok.end(); i++)
+    uint32_t n = 0;
+
+    for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
     {
       mFields.push_back(*i);
+      if ((*i) == "ID")
+        mIdIndex = n;
+      else if ((*i) == "Gene Symbol")
+        mGeneSymbolIndex = n;
+
       std::cout << "Platform field: " << (*i) << std::endl;
     }
   }
+
+  uint32_t mIdIndex, mGeneSymbolIndex;
 
   void
   processPlatformTable(const std::string& aLine)
@@ -71,11 +80,42 @@ private:
       processLine = &SOFT2Matrix::processSampleIntro;
       return;
     }
+
+    
   }
 
   void
   processSampleIntro(const std::string& aLine)
   {
+    if (aLine == "!sample_table_begin")
+      processLine = &SOFT2Matrix::processSampleHeader;
+  }
+
+  void
+  processSampleHeader(const std::string& aLine)
+  {
+    processLine = &SOFT2Matrix::processSampleTable;
+
+    boost::char_separator<char> tdv("\t", "", boost::keep_empty_tokens);
+    typedef boost::tokenizer<boost::char_separator<char> > tok_t;
+    tok_t tok(aLine, tdv);
+
+    uint32_t n = 0;
+
+    for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
+    {
+      std::cout << "Sample field: " << (*i) << std::endl;
+    }
+  }
+
+  void
+  processSampleTable(const std::string& aLine)
+  {
+    if (aLine == "!sample_table_end")
+    {
+      processLine = &SOFT2Matrix::processSampleHeader;
+      return;
+    }
   }
 };
 
