@@ -83,8 +83,6 @@ private:
         mIdIndex = n;
       else if ((*i) == "Gene Symbol")
         mGeneSymbolIndex = n;
-
-      std::cout << "Platform field: " << (*i) << std::endl;
     }
   }
 
@@ -146,7 +144,6 @@ private:
         mIdIndex = n;
       else if ((*i) == "VALUE")
         mValueIndex = n;
-      std::cout << "Sample field: " << (*i) << std::endl;
     }
   }
 
