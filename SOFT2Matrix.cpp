@@ -2,6 +2,7 @@
 #include <boost/filesystem.hpp>
 #include <iostream>
 #include <fstream>
+#include <list>
 #include <boost/tokenizer.hpp>
 
 namespace po = boost::program_options;
@@ -36,6 +37,8 @@ public:
   {
     std::string l;
     processLine = &SOFT2Matrix::processPlatformIntro;
+    mNextId = mSampleIds.begin();
+
     while (!mSOFTFile.bad())
     {
       std::getline(mSOFTFile, l);
@@ -49,6 +52,8 @@ private:
   std::ofstream *mArrayList, *mGeneList;
   void (SOFT2Matrix::* processLine)(const std::string& aLine);
   uint32_t mnSamples;
+  std::list<std::string> mSampleIds;
+  std::list<std::string>::iterator mNextId;
 
   void
   processPlatformIntro(const std::string& aLine)
@@ -61,7 +66,9 @@ private:
 
     if (aLine.substr(0, 22) == "!Platform_sample_id = ")
     {
-      (*mArrayList) << aLine.substr(22) << std::endl;
+      std::string sampleId(aLine.substr(22));
+      mSampleIds.push_back(sampleId);
+      (*mArrayList) << sampleId << std::endl;
       mnSamples++;
     }
   }
@@ -123,6 +130,16 @@ private:
   void
   processSampleIntro(const std::string& aLine)
   {
+    if (aLine.substr(0, 10) == "^SAMPLE = ")
+    {
+      std::string sampId = aLine.substr(10);
+      if (sampId != *mNextId)
+        std::cout << "Sample ID mismatch: expected "
+                  << *mNextId << " got " << sampId
+                  << std::endl;
+      mNextId++;
+      return;
+    }
     if (aLine == "!sample_table_begin")
       processLine = &SOFT2Matrix::processSampleHeader;
   }
