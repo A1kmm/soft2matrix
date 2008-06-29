@@ -37,7 +37,6 @@ public:
   {
     std::string l;
     processLine = &SOFT2Matrix::processPlatformIntro;
-    mNextId = mSampleIds.begin();
 
     while (!mSOFTFile.bad())
     {
@@ -70,6 +69,8 @@ private:
       mSampleIds.push_back(sampleId);
       (*mArrayList) << sampleId << std::endl;
       mnSamples++;
+      if (mnSamples == 1)
+        mNextId = mSampleIds.begin();
     }
   }
 
