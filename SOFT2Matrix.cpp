@@ -11,8 +11,24 @@ class SOFT2Matrix
 {
 public:
   SOFT2Matrix(const std::string& aSOFTFile, const std::string& aOutdir)
-    : mOutdir(aOutdir), mSOFTFile(aSOFTFile.c_str()), mnSamples(0)
+    : mOutdir(aOutdir), mSOFTFile(aSOFTFile.c_str()), mnSamples(0),
+      mNextIndex(0)
   {
+    fs::path arrayList(mOutdir);
+    arrayList /= "arrays";
+
+    mArrayList = new std::ofstream(arrayList.string().c_str());
+
+    fs::path geneList(mOutdir);
+    geneList /= "genes";
+
+    mGeneList = new std::ofstream(geneList.string().c_str());
+  }
+
+  ~SOFT2Matrix()
+  {
+    delete mArrayList;
+    delete mGeneList;
   }
 
   void
@@ -30,7 +46,7 @@ public:
 private:
   fs::path mOutdir;
   std::ifstream mSOFTFile;
-  std::vector<std::string> mFields;
+  std::ofstream *mArrayList, *mGeneList;
   void (SOFT2Matrix::* processLine)(const std::string& aLine);
   uint32_t mnSamples;
 
@@ -44,7 +60,10 @@ private:
     }
 
     if (aLine.substr(0, 22) == "!Platform_sample_id = ")
+    {
+      (*mArrayList) << aLine.substr(22) << std::endl;
       mnSamples++;
+    }
   }
 
   void
@@ -60,7 +79,6 @@ private:
 
     for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
     {
-      mFields.push_back(*i);
       if ((*i) == "ID")
         mIdIndex = n;
       else if ((*i) == "Gene Symbol")
@@ -70,7 +88,8 @@ private:
     }
   }
 
-  uint32_t mIdIndex, mGeneSymbolIndex;
+  uint32_t mIdIndex, mGeneSymbolIndex, mValueIndex;
+  uint32_t mNextIndex;
 
   void
   processPlatformTable(const std::string& aLine)
@@ -81,8 +100,27 @@ private:
       return;
     }
 
-    
+    boost::char_separator<char> tdv("\t", "", boost::keep_empty_tokens);
+    typedef boost::tokenizer<boost::char_separator<char> > tok_t;
+    tok_t tok(aLine, tdv);
+
+    uint32_t n = 0;
+
+    std::string id, symbol;
+    for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
+    {
+      if (n == mIdIndex)
+        id = *i;
+      else if (n == mGeneSymbolIndex)
+        symbol = *i;
+    }
+
+    mGeneIndexById.insert(std::pair<std::string, uint32_t>(id, mNextIndex));
+    (*mGeneList) << symbol << std::endl;
+    mNextIndex++;
   }
+
+  std::map<std::string, uint32_t> mGeneIndexById;
 
   void
   processSampleIntro(const std::string& aLine)
@@ -104,6 +142,10 @@ private:
 
     for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
     {
+      if ((*i) == "ID_REF")
+        mIdIndex = n;
+      else if ((*i) == "VALUE")
+        mValueIndex = n;
       std::cout << "Sample field: " << (*i) << std::endl;
     }
   }
