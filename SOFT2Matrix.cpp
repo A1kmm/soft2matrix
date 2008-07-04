@@ -4,32 +4,44 @@
 #include <fstream>
 #include <list>
 #include <boost/tokenizer.hpp>
+#include <cstdio>
+#include <boost/iostreams/filtering_stream.hpp>
+#include <boost/iostreams/device/file.hpp>
+#include <boost/iostreams/filter/bzip2.hpp>
 
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
+namespace io = boost::iostreams;
 
 class SOFT2Matrix
 {
 public:
-  SOFT2Matrix(const std::string& aSOFTFile, const std::string& aOutdir)
-    : mOutdir(aOutdir), mSOFTFile(aSOFTFile.c_str()), mnSamples(0),
-      mNextIndex(0)
+  SOFT2Matrix(std::istream& aSOFTFile, const std::string& aOutdir)
+    : mOutdir(aOutdir), mSOFTFile(aSOFTFile), mnSamples(0),
+      mNextIndex(0), mRow(NULL)
   {
     fs::path arrayList(mOutdir);
     arrayList /= "arrays";
-
     mArrayList = new std::ofstream(arrayList.string().c_str());
 
     fs::path geneList(mOutdir);
     geneList /= "genes";
-
     mGeneList = new std::ofstream(geneList.string().c_str());
+
+    fs::path dataFile(mOutdir);
+    dataFile /= "data";
+    mDataFile = fopen(dataFile.string().c_str(), "w");
   }
 
   ~SOFT2Matrix()
   {
+    if (mRow != NULL)
+      delete mRow;
     delete mArrayList;
     delete mGeneList;
+
+    if (mDataFile != NULL)
+      fclose(mDataFile);
   }
 
   void
@@ -38,27 +50,36 @@ public:
     std::string l;
     processLine = &SOFT2Matrix::processPlatformIntro;
 
-    while (!mSOFTFile.bad())
+    while (mSOFTFile.good())
     {
       std::getline(mSOFTFile, l);
       (this->*processLine)(l);
+    }
+
+    if (mNextId != mSampleIds.end())
+    {
+      std::cout << "There were samples indicated in the platform sample " 
+                << "list but missing in the "<< std::endl;
     }
   }
 
 private:
   fs::path mOutdir;
-  std::ifstream mSOFTFile;
+  std::istream& mSOFTFile;
   std::ofstream *mArrayList, *mGeneList;
+  FILE * mDataFile;
   void (SOFT2Matrix::* processLine)(const std::string& aLine);
   uint32_t mnSamples;
   std::list<std::string> mSampleIds;
   std::list<std::string>::iterator mNextId;
+  double* mRow;
 
   void
   processPlatformIntro(const std::string& aLine)
   {
     if (aLine == "!platform_table_begin")
     {
+      mNextId = mSampleIds.begin();
       processLine = &SOFT2Matrix::processPlatformHeader;
       return;
     }
@@ -69,8 +90,6 @@ private:
       mSampleIds.push_back(sampleId);
       (*mArrayList) << sampleId << std::endl;
       mnSamples++;
-      if (mnSamples == 1)
-        mNextId = mSampleIds.begin();
     }
   }
 
@@ -98,10 +117,19 @@ private:
   uint32_t mNextIndex;
 
   void
+  fillRowWithNans()
+  {
+    for (uint32_t i = 0; i < mNextIndex; i++)
+      mRow[i] = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  void
   processPlatformTable(const std::string& aLine)
   {
     if (aLine == "!platform_table_end")
     {
+      mRow = new double[mNextIndex];
+      fillRowWithNans();
       processLine = &SOFT2Matrix::processSampleIntro;
       return;
     }
@@ -121,6 +149,9 @@ private:
         symbol = *i;
     }
 
+    if (symbol == "")
+      return;
+
     mGeneIndexById.insert(std::pair<std::string, uint32_t>(id, mNextIndex));
     (*mGeneList) << symbol << std::endl;
     mNextIndex++;
@@ -138,6 +169,8 @@ private:
         std::cout << "Sample ID mismatch: expected "
                   << *mNextId << " got " << sampId
                   << std::endl;
+      else
+        std::cout << "Proc: " << sampId << std::endl;
       mNextId++;
       return;
     }
@@ -170,9 +203,35 @@ private:
   {
     if (aLine == "!sample_table_end")
     {
+      fwrite(mRow, mNextIndex, sizeof(double), mDataFile);
+      fillRowWithNans();
       processLine = &SOFT2Matrix::processSampleIntro;
       return;
     }
+
+    boost::char_separator<char> tdv("\t", "", boost::keep_empty_tokens);
+    typedef boost::tokenizer<boost::char_separator<char> > tok_t;
+    tok_t tok(aLine, tdv);
+
+    uint32_t n = 0;
+
+    std::string id, value;
+
+    for (tok_t::iterator i = tok.begin(); i != tok.end(); i++, n++)
+    {
+      if (n == mIdIndex)
+        id = *i;
+      else if (n == mValueIndex)
+        value = *i;
+    }
+    
+    if (mGeneIndexById.count(id) == 0)
+    {
+      // std::cout << "Unknown probe ID " << id << std::endl;
+      return;
+    }
+
+    mRow[mGeneIndexById[id]] = strtod(value.c_str(), NULL);
   }
 };
 
@@ -224,7 +283,11 @@ main(int argc, char**argv)
     return 1;
   }
 
-  SOFT2Matrix s2m(soft, outdir);
+  io::filtering_istream str;
+  str.push(io::bzip2_decompressor());
+  str.push(io::file_source(soft));
+
+  SOFT2Matrix s2m(str, outdir);
   s2m.process();
 
   return 0;

@@ -1,2 +1,2 @@
 ADD_EXECUTABLE(SOFT2Matrix SOFT2Matrix.cpp)
-TARGET_LINK_LIBRARIES(SOFT2Matrix boost_program_options boost_filesystem)
+TARGET_LINK_LIBRARIES(SOFT2Matrix boost_program_options boost_filesystem boost_iostreams)
