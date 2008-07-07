@@ -8,6 +8,8 @@
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/device/file.hpp>
 #include <boost/iostreams/filter/bzip2.hpp>
+#include <boost/regex.hpp>
+#include <boost/algorithm/string.hpp>
 
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
@@ -18,7 +20,7 @@ class SOFT2Matrix
 public:
   SOFT2Matrix(std::istream& aSOFTFile, const std::string& aOutdir)
     : mOutdir(aOutdir), mSOFTFile(aSOFTFile), mnSamples(0),
-      mNextIndex(0), mRow(NULL)
+      mProbesetCount(0), mGeneCount(0), mProbesets(NULL)
   {
     fs::path arrayList(mOutdir);
     arrayList /= "arrays";
@@ -35,8 +37,8 @@ public:
 
   ~SOFT2Matrix()
   {
-    if (mRow != NULL)
-      delete mRow;
+    if (mProbesets != NULL)
+      delete mProbesets;
     delete mArrayList;
     delete mGeneList;
 
@@ -63,6 +65,51 @@ public:
     }
   }
 
+  void
+  loadHGNCDatabase(const std::string& aPath)
+  {
+    io::filtering_istream db;
+    db.push(io::file_source(aPath));
+
+    // Skip the header...
+    std::string entry;
+    std::getline(db, entry);
+
+    while (db.good())
+    {
+      std::getline(db, entry);
+
+      boost::tokenizer<boost::char_separator<char> >
+        tok(entry, boost::char_separator<char>("\t", "",
+                                               boost::keep_empty_tokens));
+      std::vector<std::string> v(tok.begin(), tok.end());
+
+      if (v.size() < 6)
+        continue;
+
+      if (v[3] != "Approved")
+        continue;
+
+      uint32_t hgncId = strtoul(v[0].c_str(), NULL, 10);
+      addHGNCMapping(v[1], hgncId, true);
+
+      static const boost::regex rtok("[, ]+");
+
+      addHGNCMapping(v[2], hgncId, false);
+
+      boost::sregex_token_iterator rti1
+        (make_regex_token_iterator(v[4], rtok, -1));
+      boost::sregex_token_iterator end;
+      for (; rti1 != end; rti1++)
+        addHGNCMapping(*rti1, hgncId, false);
+
+      boost::sregex_token_iterator rti2
+        (make_regex_token_iterator(v[5], rtok, -1));
+      for (; rti2 != end; rti2++)
+        addHGNCMapping(*rti2, hgncId, false);
+    }
+  }
+
 private:
   fs::path mOutdir;
   std::istream& mSOFTFile;
@@ -72,7 +119,7 @@ private:
   uint32_t mnSamples;
   std::list<std::string> mSampleIds;
   std::list<std::string>::iterator mNextId;
-  double* mRow;
+  double* mProbesets, * mGenes;
 
   void
   processPlatformIntro(const std::string& aLine)
@@ -114,13 +161,71 @@ private:
   }
 
   uint32_t mIdIndex, mGeneSymbolIndex, mValueIndex;
-  uint32_t mNextIndex;
+  uint32_t mProbesetCount, mGeneCount;
+  std::map<uint32_t, uint32_t> mGeneIndexByHGNCId;
 
   void
   fillRowWithNans()
   {
-    for (uint32_t i = 0; i < mNextIndex; i++)
-      mRow[i] = std::numeric_limits<double>::quiet_NaN();
+    for (uint32_t i = 0; i < mProbesetCount; i++)
+      mProbesets[i] = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  uint32_t
+  findHGNCIdByName(const std::string& aName, bool stripDashes = true)
+  {
+    // Look up the name from HGNC...
+    std::map<std::string, uint32_t>::iterator i
+      (mHGNCIdMappings.find(aName));
+    if (i != mHGNCIdMappings.end())
+      return (*i).second;
+
+    // See if it ends in a number...
+    static const boost::regex endNumber("(\\-?)([0-9]+)$");
+    boost::smatch res;
+    if (boost::regex_search(aName, res, endNumber))
+    {
+      i = mHGNCIdMappings.find(res.prefix().str());
+      if (i != mHGNCIdMappings.end())
+        return (*i).second;
+
+      std::string tryAlso;
+      if (res[2].str() == "alpha")
+        tryAlso = "A";
+      else if (res[2].str() == "beta")
+        tryAlso = "B";
+      else if (res[2].str() == "1")
+        tryAlso = "I";
+      else if (res[2].str() == "2")
+        tryAlso = "II";
+
+      std::string attempt(res.prefix().str());
+      attempt += tryAlso;
+      i = mHGNCIdMappings.find(attempt);
+      if (i != mHGNCIdMappings.end())
+        return (*i).second;
+    }
+
+    // Try adding a suffix like 1 or A...
+    std::string attempt = aName + "1";
+    i = mHGNCIdMappings.find(attempt);
+    if (i != mHGNCIdMappings.end())
+      return (*i).second;
+    
+    attempt = aName + "A";
+    i = mHGNCIdMappings.find(attempt);
+    if (i != mHGNCIdMappings.end())
+      return (*i).second;
+
+    if (stripDashes)
+    {
+      // Strip out all dashes and repeat...
+      std::string dashless(boost::replace_all_copy(aName, "ALPHA", "A"));
+      boost::replace_all(dashless, "-", "");
+      return findHGNCIdByName(dashless, false);
+    }
+
+    return 0;
   }
 
   void
@@ -128,7 +233,7 @@ private:
   {
     if (aLine == "!platform_table_end")
     {
-      mRow = new double[mNextIndex];
+      mProbesets = new double[mProbesetCount];
       fillRowWithNans();
       processLine = &SOFT2Matrix::processSampleIntro;
       return;
@@ -152,9 +257,15 @@ private:
     if (symbol == "")
       return;
 
-    mGeneIndexById.insert(std::pair<std::string, uint32_t>(id, mNextIndex));
+    // Symbol is a list of genes, some of which will be in HGNC...
+    
+    findHGNCIdByName();
+
+    // mProbeGeneIds.push_();
+
+    mGeneIndexById.insert(std::pair<std::string, uint32_t>(id, mProbesetCount));
     (*mGeneList) << symbol << std::endl;
-    mNextIndex++;
+    mProbesetCount++;
   }
 
   std::map<std::string, uint32_t> mGeneIndexById;
@@ -203,7 +314,7 @@ private:
   {
     if (aLine == "!sample_table_end")
     {
-      fwrite(mRow, mNextIndex, sizeof(double), mDataFile);
+      fwrite(mProbesets, mProbesetCount, sizeof(double), mDataFile);
       fillRowWithNans();
       processLine = &SOFT2Matrix::processSampleIntro;
       return;
@@ -231,14 +342,48 @@ private:
       return;
     }
 
-    mRow[mGeneIndexById[id]] = strtod(value.c_str(), NULL);
+    mProbesets[mGeneIndexById[id]] = strtod(value.c_str(), NULL);
+  }
+
+  std::string
+  cleanup_HGNC_name(const std::string& aName)
+  {
+    std::string uc(boost::algorithm::to_upper_copy(aName));
+    boost::algorithm::replace_all(uc, "-", "");
+
+    return uc;
+  }
+
+  std::map<std::string, uint32_t> mHGNCIdMappings;
+  std::map<uint32_t, std::string> mNameByHGNCId;
+
+  void addHGNCMapping(const std::string& aMapping, uint32_t aHGNC,
+                      bool aOverride)
+  {
+    std::string dcmapping(cleanup_HGNC_name(aMapping));
+
+    if (aOverride)
+      mNameByHGNCId.insert(std::pair<uint32_t, std::string>(aHGNC, aMapping));
+
+    std::map<std::string, uint32_t>::iterator i =
+      mHGNCIdMappings.find(dcmapping);
+    if (i != mHGNCIdMappings.end())
+    {
+      if (!aOverride)
+        return;
+
+      mHGNCIdMappings.erase(i);
+    }
+
+    mHGNCIdMappings.insert(std::pair<std::string, uint32_t>
+                           (dcmapping, aHGNC));
   }
 };
 
 int
 main(int argc, char**argv)
 {
-  std::string soft, outdir;
+  std::string soft, outdir, hgnc;
 
   po::options_description desc;
 
@@ -246,6 +391,7 @@ main(int argc, char**argv)
     ("SOFT", po::value<std::string>(&soft), "The SOFT file to process")
     ("outdir", po::value<std::string>(&outdir), "The directory to put the "
      "output into")
+    ("hgnc", po::value<std::string>(&hgnc), "File containing the HGNC names database")
     ("help", "produce help message")
     ;
 
@@ -261,6 +407,8 @@ main(int argc, char**argv)
       wrong = "SOFT";
     else if (!vm.count("outdir"))
       wrong = "outdir";
+    else if (!vm.count("hgnc"))
+      wrong = "hgnc";
   }
 
   if (wrong != "")
@@ -283,11 +431,18 @@ main(int argc, char**argv)
     return 1;
   }
 
+  if (!fs::is_regular(hgnc))
+  {
+    std::cerr << "Invalid HGNC filename supplied." << std::endl;
+    return 1;
+  }
+
   io::filtering_istream str;
   str.push(io::bzip2_decompressor());
   str.push(io::file_source(soft));
 
   SOFT2Matrix s2m(str, outdir);
+  s2m.loadHGNCDatabase(hgnc);
   s2m.process();
 
   return 0;
