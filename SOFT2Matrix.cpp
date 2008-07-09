@@ -5,22 +5,28 @@
 #include <list>
 #include <boost/tokenizer.hpp>
 #include <cstdio>
+#include <math.h>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/device/file.hpp>
 #include <boost/iostreams/filter/bzip2.hpp>
 #include <boost/regex.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/lambda/lambda.hpp>
+#include <boost/lambda/bind.hpp>
+#include <boost/lambda/construct.hpp>
 
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 namespace io = boost::iostreams;
+namespace bll = boost::lambda;
 
 class SOFT2Matrix
 {
 public:
   SOFT2Matrix(std::istream& aSOFTFile, const std::string& aOutdir)
     : mOutdir(aOutdir), mSOFTFile(aSOFTFile), mnSamples(0),
-      mProbesetCount(0), mGeneCount(0), mProbesets(NULL)
+      mProbesetCount(0), mProbesets(NULL), mGenes(NULL),
+      mGeneProbesetCounts(NULL)
   {
     fs::path arrayList(mOutdir);
     arrayList /= "arrays";
@@ -39,6 +45,13 @@ public:
   {
     if (mProbesets != NULL)
       delete mProbesets;
+
+    if (mGenes != NULL)
+      delete mGenes;
+
+    if (mGeneProbesetCounts != NULL)
+      delete mGeneProbesetCounts;
+
     delete mArrayList;
     delete mGeneList;
 
@@ -120,6 +133,7 @@ private:
   std::list<std::string> mSampleIds;
   std::list<std::string>::iterator mNextId;
   double* mProbesets, * mGenes;
+  uint32_t* mGeneProbesetCounts;
 
   void
   processPlatformIntro(const std::string& aLine)
@@ -165,7 +179,7 @@ private:
   std::map<uint32_t, uint32_t> mGeneIndexByHGNCId;
 
   void
-  fillRowWithNans()
+  fillProbesetArrayWithNans()
   {
     for (uint32_t i = 0; i < mProbesetCount; i++)
       mProbesets[i] = std::numeric_limits<double>::quiet_NaN();
@@ -229,13 +243,50 @@ private:
   }
 
   void
+  platformTableDone()
+  {
+    mProbesets = new double[mProbesetCount];
+    fillProbesetArrayWithNans();
+    
+    mGeneCount = mUsedHGNCIds.size();
+    mGenes = new double[mGeneCount];
+    mGeneProbesetCounts = new uint32_t[mGeneCount];
+
+    std::map<uint32_t, uint32_t> hgncIdToGeneIndex;
+    uint32_t geneIndex(0);
+
+    typedef std::pair<uint32_t, uint32_t> pairu32;
+
+    for (std::set<uint32_t>::iterator i = mUsedHGNCIds.begin();
+         i != mUsedHGNCIds.end();
+         i++, geneIndex++)
+    {
+      hgncIdToGeneIndex.insert(pairu32(*i, geneIndex));
+      (*mGeneList) << mNameByHGNCId[*i] << std::endl;
+    }
+
+    std::transform(
+                   mProbesetHGNCIdList.begin(),
+                   mProbesetHGNCIdList.end(),
+                   std::back_inserter(mProbesetGeneList),
+                   bll::bind<pairu32>
+                   (
+                    bll::constructor<pairu32>(),
+                    bll::bind(&pairu32::first, bll::_1),
+                    bll::var(hgncIdToGeneIndex)
+                    [bll::bind<uint32_t>(&pairu32::second, bll::_1)]
+                   )
+                  );
+
+    processLine = &SOFT2Matrix::processSampleIntro;
+  }
+
+  void
   processPlatformTable(const std::string& aLine)
   {
     if (aLine == "!platform_table_end")
     {
-      mProbesets = new double[mProbesetCount];
-      fillRowWithNans();
-      processLine = &SOFT2Matrix::processSampleIntro;
+      platformTableDone();
       return;
     }
 
@@ -258,17 +309,33 @@ private:
       return;
 
     // Symbol is a list of genes, some of which will be in HGNC...
-    
-    findHGNCIdByName();
+    static const boost::regex geneSep(" // ");
+    boost::sregex_token_iterator rti
+      (boost::make_regex_token_iterator(symbol, geneSep, -1));
 
-    // mProbeGeneIds.push_();
+    std::set<uint32_t> seenIds;
+    for (; rti != boost::sregex_token_iterator(); rti++)
+    {
+      uint32_t hgncid(findHGNCIdByName(*rti));
+      if (hgncid == 0)
+        continue;
 
-    mGeneIndexById.insert(std::pair<std::string, uint32_t>(id, mProbesetCount));
-    (*mGeneList) << symbol << std::endl;
+      if (seenIds.count(hgncid) != 0)
+        continue;
+      seenIds.insert(hgncid);
+      mUsedHGNCIds.insert(hgncid);
+
+      mProbesetHGNCIdList.push_back(std::pair<uint32_t, uint32_t>
+                                    (hgncid, mProbesetCount));
+    }
+
+    mProbesetIndexById.insert(std::pair<std::string, uint32_t>(id, mProbesetCount));
     mProbesetCount++;
   }
 
-  std::map<std::string, uint32_t> mGeneIndexById;
+  std::map<std::string, uint32_t> mProbesetIndexById;
+  std::list<std::pair<uint32_t, uint32_t> > mProbesetHGNCIdList, mProbesetGeneList;
+  std::set<uint32_t> mUsedHGNCIds;
 
   void
   processSampleIntro(const std::string& aLine)
@@ -310,13 +377,45 @@ private:
   }
 
   void
+  sampleTableDone()
+  {
+    memset(mGenes, 0, sizeof(double) * mGeneCount);
+    memset(mGeneProbesetCounts, 0, sizeof(uint32_t) * mGeneCount);
+
+    for (std::list<std::pair<uint32_t, uint32_t> >::iterator i(mProbesetGeneList.begin());
+         i != mProbesetGeneList.end();
+         i++)
+    {
+      uint32_t probeset = (*i).first;
+      uint32_t gene = (*i).second;
+
+      if (isfinite(mProbesets[probeset]))
+      {
+        mGeneProbesetCounts[gene]++;
+        mGenes[gene] += mProbesets[probeset];
+      }
+    }
+    
+    for (uint32_t i = 0; i < mGeneCount; i++)
+    {
+      if (mGeneProbesetCounts[i] == 0)
+        mGenes[i] = std::numeric_limits<double>::quiet_NaN();
+      else
+        mGenes[i] /= mGeneProbesetCounts[i];
+    }
+
+    fwrite(mGenes, mGeneCount, sizeof(double), mDataFile);
+
+    fillProbesetArrayWithNans();
+    processLine = &SOFT2Matrix::processSampleIntro;
+  }
+
+  void
   processSampleTable(const std::string& aLine)
   {
     if (aLine == "!sample_table_end")
     {
-      fwrite(mProbesets, mProbesetCount, sizeof(double), mDataFile);
-      fillRowWithNans();
-      processLine = &SOFT2Matrix::processSampleIntro;
+      sampleTableDone();
       return;
     }
 
@@ -336,13 +435,13 @@ private:
         value = *i;
     }
     
-    if (mGeneIndexById.count(id) == 0)
+    if (mProbesetIndexById.count(id) == 0)
     {
       // std::cout << "Unknown probe ID " << id << std::endl;
       return;
     }
 
-    mProbesets[mGeneIndexById[id]] = strtod(value.c_str(), NULL);
+    mProbesets[mProbesetIndexById[id]] = strtod(value.c_str(), NULL);
   }
 
   std::string
