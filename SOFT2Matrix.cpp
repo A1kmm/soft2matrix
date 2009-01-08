@@ -26,7 +26,7 @@ public:
   SOFT2Matrix(std::istream& aSOFTFile, const std::string& aOutdir)
     : mOutdir(aOutdir), mSOFTFile(aSOFTFile), mnSamples(0),
       mProbesetCount(0), mProbesets(NULL), mGenes(NULL),
-      mGeneProbesetCounts(NULL)
+      mGeneProbesetCounts(NULL), mGotSampleTable(true)
   {
     fs::path arrayList(mOutdir);
     arrayList /= "arrays";
@@ -134,6 +134,7 @@ private:
   std::list<std::string>::iterator mNextId;
   double* mProbesets, * mGenes;
   uint32_t* mGeneProbesetCounts;
+  bool mGotSampleTable;
 
   void
   processPlatformIntro(const std::string& aLine)
@@ -252,6 +253,9 @@ private:
     mGenes = new double[mGeneCount];
     mGeneProbesetCounts = new uint32_t[mGeneCount];
 
+    std::cout << "mGeneCount = " << mGeneCount << std::endl
+              << "mnSamples = " << mnSamples << std::endl;
+
     std::map<uint32_t, uint32_t> hgncIdToGeneIndex;
     uint32_t geneIndex(0);
 
@@ -342,6 +346,26 @@ private:
   {
     if (aLine.substr(0, 10) == "^SAMPLE = ")
     {
+      if (!mGotSampleTable)
+      {
+        // This means we found two ^SAMPLE records with no intervening 
+        // !sample_table_begin lines! Write a message...
+        std::cout << "Warning: Next sample found without a "
+          "!sample_table_begin line!" << std::endl;
+
+        // Next, we need to write out a NaN-filled placeholder entry for the
+        // missing data...
+        for (uint32_t i = 0; i < mGeneCount; i++)
+          mGenes[i] = std::numeric_limits<double>::quiet_NaN();
+        if (fwrite(mGenes, mGeneCount * sizeof(double), 1, mDataFile) != 1)
+        {
+          std::cout << "Failed to write record." << std::endl;
+        }
+
+        fflush(mDataFile); // Makes checking file sizes easier...
+      }
+
+      mGotSampleTable = false;
       std::string sampId = aLine.substr(10);
       if (sampId != *mNextId)
         std::cout << "Sample ID mismatch: expected "
@@ -353,7 +377,10 @@ private:
       return;
     }
     if (aLine == "!sample_table_begin")
+    {
+      mGotSampleTable = true;
       processLine = &SOFT2Matrix::processSampleHeader;
+    }
   }
 
   void
@@ -404,7 +431,12 @@ private:
         mGenes[i] /= mGeneProbesetCounts[i];
     }
 
-    fwrite(mGenes, mGeneCount, sizeof(double), mDataFile);
+    if (fwrite(mGenes, mGeneCount * sizeof(double), 1, mDataFile) != 1)
+    {
+      std::cout << "Failed to write record." << std::endl;
+    }
+
+    fflush(mDataFile); // Makes checking file sizes easier...
 
     fillProbesetArrayWithNans();
     processLine = &SOFT2Matrix::processSampleIntro;
@@ -540,9 +572,11 @@ main(int argc, char**argv)
   str.push(io::bzip2_decompressor());
   str.push(io::file_source(soft));
 
-  SOFT2Matrix s2m(str, outdir);
-  s2m.loadHGNCDatabase(hgnc);
-  s2m.process();
+  {
+    SOFT2Matrix s2m(str, outdir);
+    s2m.loadHGNCDatabase(hgnc);
+    s2m.process();
+  }
 
   return 0;
 }

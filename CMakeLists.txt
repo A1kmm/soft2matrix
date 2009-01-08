@@ -2,3 +2,11 @@ ADD_EXECUTABLE(SOFT2Matrix SOFT2Matrix.cpp)
 TARGET_LINK_LIBRARIES(SOFT2Matrix
   boost_program_options boost_filesystem boost_iostreams boost_regex
 )
+
+ADD_EXECUTABLE(RankTransformDataset RankTransformDataset.cpp)
+TARGET_LINK_LIBRARIES(RankTransformDataset
+  boost_program_options boost_filesystem
+)
+
+ADD_EXECUTABLE(InvertData InvertData.cpp)
+TARGET_LINK_LIBRARIES(InvertData boost_program_options boost_filesystem)
