@@ -1,0 +1,8 @@
+InvertData
+RankTransformDataset
+*.[oa]
+*~
+CMakeCache.txt
+CMakeFiles
+SOFT2Matrix
+Makefile
