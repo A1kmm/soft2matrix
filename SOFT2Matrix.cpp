@@ -74,7 +74,7 @@ public:
     if (mNextId != mSampleIds.end())
     {
       std::cout << "There were samples indicated in the platform sample " 
-                << "list but missing in the "<< std::endl;
+                << "list but missing in the data file."<< std::endl;
     }
   }
 

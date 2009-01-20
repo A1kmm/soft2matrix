@@ -2,6 +2,8 @@
 #include <boost/filesystem.hpp>
 #include <boost/lambda/lambda.hpp>
 #include <boost/lambda/bind.hpp>
+#include <boost/random/uniform_int.hpp>
+#include <boost/random/mersenne_twister.hpp>
 #include <cstdio>
 #include <iostream>
 #include <fstream>
@@ -14,10 +16,12 @@ class RankTransformer
 {
 public:
   RankTransformer(const std::string& aMatrixDir, const std::string& aOutputfile,
-                  bool aQuantileNormalisation = false, bool aUseInverse = false)
+                  bool aQuantileNormalisation = false, bool aUseInverse = false,
+                  bool aScramble = false)
     : mMatrixDir(aMatrixDir), mOutputFile(NULL), mData(NULL), mBuf(NULL),
       mRanks(NULL), mInvRanks(NULL), mRankAvgs(NULL), mRankCounts(NULL),
-      mQuantileNormalisation(aQuantileNormalisation), mUseInverse(aUseInverse)
+      mQuantileNormalisation(aQuantileNormalisation), mUseInverse(aUseInverse),
+      mScramble(aScramble)
   {
     mOutputFile = fopen(aOutputfile.c_str(), "w");
 
@@ -89,8 +93,8 @@ private:
   uint32_t* mInvRanks;
   double * mRankAvgs;
   uint32_t * mRankCounts;
-  bool mQuantileNormalisation;
-  bool mUseInverse;
+  bool mQuantileNormalisation, mUseInverse, mScramble;
+  boost::mt19937 mRand;
 
   void
   processAllData()
@@ -115,6 +119,20 @@ private:
   processArray(bool aAverageMode = false)
   {
     uint32_t nNans = 0;
+
+    if (mScramble)
+    {
+      boost::uniform_int<uint32_t> ui(0, nGenes - 1);
+      for (uint32_t k = 0; k < nGenes; k++)
+      {
+        double t = mBuf[k];
+        uint32_t h = ui(mRand);
+        
+        mBuf[k] = mBuf[h];
+        mBuf[h] = t;
+      }
+    }
+
     for (uint32_t i = 0; i < nGenes; i++)
     {
       mInvRanks[i] = i;
@@ -173,6 +191,7 @@ main(int argc, char** argv)
   desc.add_options()
     ("matrixdir", po::value<std::string>(&matrixdir), "The directory to read the data from")
     ("use_inverse", "Use the inverted data-set instead of the original")
+    ("scramble", "Scramble data prior to rank transform")
     ("output", po::value<std::string>(&outputfile), "The file to write the output into")
     ("qnorm", "If specified, causes quantile normalisation to be applied to the data")
     ;
@@ -205,5 +224,6 @@ main(int argc, char** argv)
     return 1;
   }
 
-  RankTransformer rt(matrixdir, outputfile, vm.count("qnorm") != 0, vm.count("use_inverse") != 0);
+  RankTransformer rt(matrixdir, outputfile, vm.count("qnorm") != 0, vm.count("use_inverse") != 0,
+                     vm.count("scramble") != 0);
 }
