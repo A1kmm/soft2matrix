@@ -118,7 +118,7 @@ private:
   void
   processArray(bool aAverageMode = false)
   {
-    uint32_t nNans = 0;
+    uint32_t nNotNans = 0;
 
     if (mScramble)
     {
@@ -136,10 +136,9 @@ private:
     for (uint32_t i = 0; i < nGenes; i++)
     {
       mInvRanks[i] = i;
-      nNans += !!finite(mBuf[i]);
+      nNotNans += !!finite(mBuf[i]);
     }
 
-    uint32_t nNotNans = nGenes - nNans;
     double rankInflationFactor = (nGenes + 0.0) / nNotNans;
 
     // Sort indices by value, with NaNs at the top.
